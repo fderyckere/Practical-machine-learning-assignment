@@ -1,0 +1,115 @@
+library(caret)
+library(randomForest)
+
+## read the training data file
+data <- read.csv("pml-training.csv")
+
+## Create a set for cross-validation
+set.seed(3433)
+inTrain = createDataPartition(data$classe, p = .70)[[1]]
+trainingset = data[ inTrain,]
+validation = data[-inTrain,]
+trainingtest <- data[ inTrain,]
+remove(data)
+
+
+## Clean up the dataset
+colsSelected <- !sapply(strsplit(names(trainingset), "_"), 
+                    function(x) x[1]) %in% c("kurtosis", "skewness", "max", "min", "amplitude", "var", "avg", "stddev")
+trainingset <- trainingset[, colsSelected]
+
+## Motivation for the approach
+pr <- prcomp(trainingset[,c(-(1:7),-60)], center=TRUE, scale=TRUE)
+tr <- predict(pr, trainingset)
+par(mfrow=c(1,2))
+plot(tr[,1:2], col=trainingset$user_name, main="PCA by user_name")
+legend(x="bottomright", levels(trainingset$user_name), pch=1, col=1:6)
+plot(tr[,1:2], col=trainingset$classe, main="PCA by classe")
+legend(x="bottomright", levels(trainingset$classe), pch=1, col=1:5)
+remove(tr)
+
+## Create the models
+
+# Select the columns given no error on standardized PCA
+neglectCol <- function (x) {
+        s <- split(x, trainingset$user_name)
+        sum(sapply(s, sum) == 0) > 0
+}
+neglect <- c(rep(TRUE, 7), apply(trainingset[,8:59], 2, neglectCol), TRUE)
+select <- names(trainingset)[!neglect]
+
+# Create a model per user_name
+par(mfrow=c(3,2))
+for (i in 1:6) {
+        training <- subset(trainingset, user_name==levels(trainingset$user_name)[i])
+        training2 <- training[,select]
+        
+        pr <- prcomp(training2, center=TRUE, scale=TRUE)
+        training2 <- as.data.frame(predict(pr, training2))
+        
+        training2$classe <- training$classe
+        training2$user_name <- training$user_name
+        
+        plot(training2[,1:2], col=training2$classe, main=paste("PCA for",levels(training$user_name)[i]))
+        legend(x="topright", levels(training2$classe), pch=1, col=1:5)
+        
+        set.seed(124512)
+        # select the principal components up to a certain variance % (e.g. 90%)
+        s <- cumsum(pr$sdev^2)/sum(pr$sdev^2)
+        ns <- seq_along(s)[s >= .9][1] 
+        
+        # Fit the model
+        modFit <- train(classe ~ .,method="rf",data=training2[,c(paste("PC", 1:ns, sep=""), "classe", "user_name")], proxy=TRUE)
+        
+        # Memorize the results (could be done more nicely)
+        if (i==1) {mod1 <- modFit; pr1 <- pr} 
+        else if (i==2) {mod2 <- modFit; pr2 <- pr} 
+        else if (i==3) {mod3 <- modFit; pr3 <- pr} 
+        else if (i==4) {mod4 <- modFit; pr4 <- pr} 
+        else if (i==5) {mod5 <- modFit; pr5 <- pr} 
+        else {mod6 <- modFit; pr6 <- pr }  
+}
+
+## Do the validation
+
+# Create a funtion for predicting
+testPrediction <- function (testset) {
+        predicted <- rep(NA, nrow(testset))
+        for (i in 1:6) {
+                if (i==1) {mod <- mod1; pr <- pr1 } 
+                else if (i==2) { mod <- mod2; pr <- pr2 } 
+                else if (i==3) { mod <- mod3; pr <- pr3 } 
+                else if (i==4) { mod <- mod4; pr <- pr4 } 
+                else if (i==5) { mod <- mod5; pr <- pr5 } 
+                else { mod <- mod6; pr <- pr6 }
+        
+                subset <- subset(testset, user_name == levels(trainingset$user_name)[i])
+                subset2 <- subset[,select]
+                val <- as.data.frame(predict(pr, subset))
+                val$user_name <- subset$user_name
+                tr <- predict(mod, val)
+                predicted[testset$user_name == levels(trainingset$user_name)[i]] <- tr
+        }
+        predicted <- levels(trainingset$classe)[predicted]
+        predicted
+}
+# Test the validation
+confusionMatrix(testPrediction(validation), validation$classe)
+
+## Do the prediction
+
+# Do the prediction on the test data
+testing <- read.csv("pml-testing.csv")
+# Submit the answers to Coursera
+answers <- testPrediction(testing)
+pml_write_files = function(x){
+        n = length(x)
+        for(i in 1:n){
+                filename = paste0("./Results/problem_id_",i,".txt")
+                write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+        }
+}
+pml_write_files(answers)
+
+
+
